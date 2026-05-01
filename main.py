@@ -41,8 +41,9 @@ TARGET_GROUP_ID = -5105606585
 
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-# === 4. PRICE CALCULATION (Wholesale -> Sales Channel) ===
+# === 4. TEXT PROCESSING ===
 def calculate_prices(text):
+    """Extract wholesale price and add regular/offer prices"""
     if not text:
         return text
     price_match = re.search(r"[Pp]rice\s*[:：]\s*(\d+)\s*[Tt][Kk]", text)
@@ -53,8 +54,8 @@ def calculate_prices(text):
         return f"{text}\n\nregular price: {regular}\noffer price: {offer}"
     return text
 
-# === 5. WHOLESALE PRICE REMOVAL (Sales Channel -> Target Group) ===
 def remove_wholesale_price(text):
+    """Remove any line containing 'tk', 'Tk', or 'TK'"""
     if not text:
         return text
     lines = text.split("\n")
@@ -69,76 +70,74 @@ def remove_wholesale_price(text):
     return new_text.strip()
 
 
-# === 6. WHOLESALE -> SALES CHANNEL HANDLERS ===
+def process_for_sales(text):
+    """Add calculated prices to text"""
+    return calculate_prices(text)
+
+def process_for_target(text):
+    """Remove wholesale price lines from text"""
+    # First add the calculated prices (so target also sees regular/offer)
+    text_with_prices = calculate_prices(text)
+    # Then remove the original wholesale price line
+    return remove_wholesale_price(text_with_prices)
+
+
+# === 5. ALBUM HANDLER (Multiple photos) ===
 @client.on(events.Album(chats=WHOLESALE_GROUPS))
-async def wholesale_album_handler(event):
+async def album_handler(event):
     original_text = event.text or event.raw_text or ""
-    print(f"📸 [WHOLESALE] Album from {event.chat_id}: {len(event.messages)} photos")
-    new_text = calculate_prices(original_text)
-    try:
-        media_files = [msg.media for msg in event.messages if msg.media]
-        sent = await client.send_file(SALES_CHANNEL_ID, file=media_files, caption=new_text, parse_mode=None)
-        print(f"✅ [WHOLESALE] Album sent to Sales Channel (msg_id: {sent[0].id if isinstance(sent, list) else sent.id})")
-    except Exception as e:
-        print(f"❌ [WHOLESALE] Error: {e}")
+    print(f"📸 Album from wholesale group {event.chat_id}: {len(event.messages)} photos")
 
+    sales_text = process_for_sales(original_text)
+    target_text = process_for_target(original_text)
+
+    media_files = [msg.media for msg in event.messages if msg.media]
+
+    try:
+        # Send to Sales Channel (with calculated prices)
+        await client.send_file(SALES_CHANNEL_ID, file=media_files, caption=sales_text, parse_mode=None)
+        print(f"✅ Album sent to Sales Channel")
+
+        # Send to Target Group (with wholesale price removed)
+        await client.send_file(TARGET_GROUP_ID, file=media_files, caption=target_text, parse_mode=None)
+        print(f"✅ Album sent to Target Group")
+
+    except Exception as e:
+        print(f"❌ Error forwarding album: {e}")
+
+
+# === 6. SINGLE MESSAGE HANDLER (Single photo or text) ===
 @client.on(events.NewMessage(chats=WHOLESALE_GROUPS))
-async def wholesale_single_handler(event):
+async def single_handler(event):
     if event.grouped_id:
-        return
-    msg = event.message
-    original_text = msg.text or msg.raw_text or ""
-    new_text = calculate_prices(original_text)
-    try:
-        if msg.media:
-            sent = await client.send_file(SALES_CHANNEL_ID, file=msg.media, caption=new_text, parse_mode=None)
-            print(f"✅ [WHOLESALE] Media sent to Sales Channel (msg_id: {sent.id})")
-        else:
-            sent = await client.send_message(SALES_CHANNEL_ID, new_text)
-            print(f"✅ [WHOLESALE] Text sent to Sales Channel (msg_id: {sent.id})")
-    except Exception as e:
-        print(f"❌ [WHOLESALE] Error: {e}")
-
-
-# === 7. SALES CHANNEL -> TARGET GROUP HANDLERS ===
-# CRITICAL FIX: Use incoming=True to only catch messages RECEIVED by the channel,
-# not messages sent FROM the channel by this bot
-@client.on(events.NewMessage(chats=SALES_CHANNEL_ID, incoming=True))
-async def sales_single_handler(event):
-    if event.grouped_id:
-        return
+        return  # Albums handled above
 
     msg = event.message
     original_text = msg.text or msg.raw_text or ""
 
-    print(f"📨 [SALES] New message in Sales Channel from sender {event.sender_id}")
-    print(f"   Text preview: {original_text[:80]}...")
+    print(f"📨 Message from wholesale group {event.chat_id}")
 
-    new_text = remove_wholesale_price(original_text)
+    sales_text = process_for_sales(original_text)
+    target_text = process_for_target(original_text)
 
     try:
         if msg.media:
-            sent = await client.send_file(TARGET_GROUP_ID, file=msg.media, caption=new_text, parse_mode=None)
-            print(f"✅ [SALES] Media forwarded to Target Group (msg_id: {sent.id})")
+            # Send media to both destinations
+            await client.send_file(SALES_CHANNEL_ID, file=msg.media, caption=sales_text, parse_mode=None)
+            print(f"✅ Media sent to Sales Channel")
+
+            await client.send_file(TARGET_GROUP_ID, file=msg.media, caption=target_text, parse_mode=None)
+            print(f"✅ Media sent to Target Group")
         else:
-            sent = await client.send_message(TARGET_GROUP_ID, new_text)
-            print(f"✅ [SALES] Text forwarded to Target Group (msg_id: {sent.id})")
+            # Send text to both destinations
+            await client.send_message(SALES_CHANNEL_ID, sales_text)
+            print(f"✅ Text sent to Sales Channel")
+
+            await client.send_message(TARGET_GROUP_ID, target_text)
+            print(f"✅ Text sent to Target Group")
+
     except Exception as e:
-        print(f"❌ [SALES] Error forwarding to target: {e}")
-
-@client.on(events.Album(chats=SALES_CHANNEL_ID))
-async def sales_album_handler(event):
-    original_text = event.text or event.raw_text or ""
-    print(f"📸 [SALES] Album in Sales Channel: {len(event.messages)} items")
-
-    new_text = remove_wholesale_price(original_text)
-
-    try:
-        media_files = [msg.media for msg in event.messages if msg.media]
-        sent = await client.send_file(TARGET_GROUP_ID, file=media_files, caption=new_text, parse_mode=None)
-        print(f"✅ [SALES] Album forwarded to Target Group")
-    except Exception as e:
-        print(f"❌ [SALES] Error: {e}")
+        print(f"❌ Error forwarding message: {e}")
 
 
 async def main():
@@ -151,8 +150,9 @@ async def main():
     session_str = client.session.save()
     print(f"💾 Session string: {session_str}\n")
 
-    print(f"📥 WHOLESALE -> SALES: Watching {len(WHOLESALE_GROUPS)} groups -> {SALES_CHANNEL_ID}")
-    print(f"📤 SALES -> TARGET: Watching {SALES_CHANNEL_ID} -> {TARGET_GROUP_ID}\n")
+    print(f"📥 Watching {len(WHOLESALE_GROUPS)} wholesale groups")
+    print(f"📤 Sales Channel: {SALES_CHANNEL_ID} (with calculated prices)")
+    print(f"📤 Target Group: {TARGET_GROUP_ID} (wholesale price removed)\n")
 
     await client.run_until_disconnected()
 
