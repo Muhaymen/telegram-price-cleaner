@@ -13,6 +13,11 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Bot is running!")
 
+    def do_HEAD(self):
+        """Handle HEAD requests from UptimeRobot"""
+        self.send_response(200)
+        self.end_headers()
+
 def run_health_check_server():
     server = HTTPServer(("0.0.0.0", 10000), SimpleHTTPRequestHandler)
     print("🌍 Health check server started on port 10000")
@@ -76,13 +81,11 @@ def process_for_sales(text):
 
 def process_for_target(text):
     """Remove wholesale price lines from text"""
-    # First add the calculated prices (so target also sees regular/offer)
     text_with_prices = calculate_prices(text)
-    # Then remove the original wholesale price line
     return remove_wholesale_price(text_with_prices)
 
 
-# === 5. ALBUM HANDLER (Multiple photos) ===
+# === 5. ALBUM HANDLER ===
 @client.on(events.Album(chats=WHOLESALE_GROUPS))
 async def album_handler(event):
     original_text = event.text or event.raw_text or ""
@@ -94,23 +97,20 @@ async def album_handler(event):
     media_files = [msg.media for msg in event.messages if msg.media]
 
     try:
-        # Send to Sales Channel (with calculated prices)
         await client.send_file(SALES_CHANNEL_ID, file=media_files, caption=sales_text, parse_mode=None)
         print(f"✅ Album sent to Sales Channel")
 
-        # Send to Target Group (with wholesale price removed)
         await client.send_file(TARGET_GROUP_ID, file=media_files, caption=target_text, parse_mode=None)
         print(f"✅ Album sent to Target Group")
-
     except Exception as e:
         print(f"❌ Error forwarding album: {e}")
 
 
-# === 6. SINGLE MESSAGE HANDLER (Single photo or text) ===
+# === 6. SINGLE MESSAGE HANDLER ===
 @client.on(events.NewMessage(chats=WHOLESALE_GROUPS))
 async def single_handler(event):
     if event.grouped_id:
-        return  # Albums handled above
+        return
 
     msg = event.message
     original_text = msg.text or msg.raw_text or ""
@@ -122,20 +122,17 @@ async def single_handler(event):
 
     try:
         if msg.media:
-            # Send media to both destinations
             await client.send_file(SALES_CHANNEL_ID, file=msg.media, caption=sales_text, parse_mode=None)
             print(f"✅ Media sent to Sales Channel")
 
             await client.send_file(TARGET_GROUP_ID, file=msg.media, caption=target_text, parse_mode=None)
             print(f"✅ Media sent to Target Group")
         else:
-            # Send text to both destinations
             await client.send_message(SALES_CHANNEL_ID, sales_text)
             print(f"✅ Text sent to Sales Channel")
 
             await client.send_message(TARGET_GROUP_ID, target_text)
             print(f"✅ Text sent to Target Group")
-
     except Exception as e:
         print(f"❌ Error forwarding message: {e}")
 
