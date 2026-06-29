@@ -40,23 +40,26 @@ WHOLESALE_GROUPS = [
     -1003508958197,
     -1003550177477,
     -1003607938528,
-   ]
+    -1002105437124,
+    -1001950071055,
+    -1002324384553,
+    -1002090867645,
+]
 SALES_CHANNEL_ID = -4952068101
-TARGET_GROUP_ID = -1003569937421
+TARGET_GROUP_ID = -1002307941036
 
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 # === 4. TEXT PROCESSING ===
 def calculate_prices(text):
-    """Extract wholesale price and add regular/offer prices"""
+    """Extract wholesale price and add offer price (wholesale × 1.11)"""
     if not text:
         return text
     price_match = re.search(r"[Pp]rice\s*[:：]\s*(\d+)\s*[Tt][Kk]", text)
     if price_match:
         wholesale = int(price_match.group(1))
-        regular = wholesale * 2
-        offer = int(wholesale * 1.67)
-        return f"{text}\n\nregular price: {regular}\noffer price: {offer}"
+        offer = int(wholesale * 1.11)
+        return f"{text}\n\noffer price: {offer}"
     return text
 
 def remove_wholesale_price(text):
@@ -76,7 +79,7 @@ def remove_wholesale_price(text):
 
 
 def process_for_sales(text):
-    """Add calculated prices to text"""
+    """Add calculated offer price to text"""
     return calculate_prices(text)
 
 def process_for_target(text):
@@ -148,11 +151,10 @@ async def main():
     print(f"💾 Session string: {session_str}\n")
 
     print(f"📥 Watching {len(WHOLESALE_GROUPS)} wholesale groups")
-    print(f"📤 Sales Channel: {SALES_CHANNEL_ID} (with calculated prices)")
+    print(f"📤 Sales Channel: {SALES_CHANNEL_ID} (with offer price)")
     print(f"📤 Target Group: {TARGET_GROUP_ID} (wholesale price removed)\n")
 
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
     asyncio.run(main())
-
