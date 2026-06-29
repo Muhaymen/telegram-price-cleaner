@@ -59,7 +59,7 @@ def calculate_prices(text):
     if price_match:
         wholesale = int(price_match.group(1))
         offer = int(wholesale * 1.11)
-        return f"{text}\n\noffer price: {offer}"
+        return f"{text}\n\nWholesale Price: {offer}"
     return text
 
 def remove_wholesale_price(text):
