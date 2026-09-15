@@ -332,6 +332,7 @@ def build_text_for_route(original_text, price_fn):
     return cleaned
 
 
+
 # ============================================================
 # 8. GET ALL ROUTES FOR A SOURCE GROUP
 # ============================================================
@@ -364,13 +365,217 @@ def get_routes_for_source(source_id):
 
 
 # ============================================================
-# 9. SAFE SEND FILE
+# 9. MEDIA / CAPTION PAIRING
 # ============================================================
 #
-# Handles Telegram FloodWaitError.
+# IMPORTANT:
+# Telegram can sometimes deliver a product's text and media
+# as separate NewMessage events, even when the user sees them
+# as one product post.
 #
-# If Telegram says "wait 918 seconds", we wait and then
-# continue instead of abandoning the route.
+# We temporarily hold text-only or media-only messages for a
+# few seconds. If the matching part arrives, we send them
+# together.
+#
+# Normal messages that already contain BOTH text + media are
+# sent immediately.
+#
+# Telegram albums are handled separately below.
+# ============================================================
+
+PAIR_WINDOW = 4.0
+ALBUM_CAPTION_WAIT = 3.0
+
+# One pending item per source group.
+# Example:
+# PENDING[chat_id] = {
+#     "kind": "text" or "media",
+#     "text": "...",
+#     "media": ...,
+#     "created": loop.time(),
+#     "task": asyncio.Task(...)
+# }
+PENDING = {}
+
+
+def message_text(msg):
+    """Safely get all normal Telegram text/caption text."""
+    return (
+        getattr(msg, "text", None)
+        or getattr(msg, "raw_text", None)
+        or ""
+    ).strip()
+
+
+def album_caption(event):
+    """
+    Find the caption/text belonging to a Telegram album.
+
+    We do NOT rely only on event.text because Telegram albums
+    consist of multiple underlying messages. The caption may
+    be attached to one of those messages.
+    """
+    # First use the event-level text if available.
+    text = (
+        getattr(event, "text", None)
+        or getattr(event, "raw_text", None)
+        or ""
+    ).strip()
+
+    if text:
+        return text
+
+    # Otherwise inspect every message in the album.
+    for msg in event.messages:
+        text = message_text(msg)
+        if text:
+            return text
+
+    return ""
+
+
+def cancel_pending(chat_id):
+    """Cancel a pending timeout task without raising errors."""
+    pending = PENDING.pop(chat_id, None)
+
+    if pending:
+        task = pending.get("task")
+
+        if task and not task.done():
+            task.cancel()
+
+
+async def flush_pending(chat_id):
+    """
+    Send a text-only or media-only message when its pairing
+    window expires.
+    """
+    try:
+        await asyncio.sleep(PAIR_WINDOW)
+    except asyncio.CancelledError:
+        return
+
+    pending = PENDING.get(chat_id)
+
+    if not pending:
+        return
+
+    # Remove it before sending so a new message can create a
+    # fresh pending item while this one is being processed.
+    PENDING.pop(chat_id, None)
+
+    source_id = chat_id
+    routes = get_routes_for_source(source_id)
+
+    if not routes:
+        return
+
+    if pending["kind"] == "text":
+
+        original_text = pending["text"]
+
+        for route in routes:
+
+            text_for_route = build_text_for_route(
+                original_text,
+                route["price_fn"]
+            )
+
+            await safe_send_message(
+                route["target"],
+                text_for_route,
+                route["name"]
+            )
+
+    elif pending["kind"] == "media":
+
+        media = pending["media"]
+
+        for route in routes:
+
+            await safe_send_file(
+                route["target"],
+                media,
+                "",
+                route["name"]
+            )
+
+
+async def hold_text(chat_id, text):
+    """Temporarily hold text in case its media follows."""
+
+    cancel_pending(chat_id)
+
+    loop = asyncio.get_running_loop()
+
+    PENDING[chat_id] = {
+        "kind": "text",
+        "text": text,
+        "media": None,
+        "created": loop.time(),
+        "task": None,
+    }
+
+    PENDING[chat_id]["task"] = asyncio.create_task(
+        flush_pending(chat_id)
+    )
+
+
+async def hold_media(chat_id, media):
+    """Temporarily hold media in case its text follows."""
+
+    cancel_pending(chat_id)
+
+    loop = asyncio.get_running_loop()
+
+    PENDING[chat_id] = {
+        "kind": "media",
+        "text": "",
+        "media": media,
+        "created": loop.time(),
+        "task": None,
+    }
+
+    PENDING[chat_id]["task"] = asyncio.create_task(
+        flush_pending(chat_id)
+    )
+
+
+async def send_product(routes, media, original_text):
+    """
+    Send one complete product post.
+
+    If media is present, text is used as the caption.
+    If media is absent, text is sent as a normal message.
+    """
+
+    for route in routes:
+
+        text_for_route = build_text_for_route(
+            original_text,
+            route["price_fn"]
+        )
+
+        if media:
+
+            await safe_send_file(
+                route["target"],
+                media,
+                text_for_route,
+                route["name"]
+            )
+
+        else:
+
+            await safe_send_message(
+                route["target"],
+                text_for_route,
+                route["name"]
+            )
+
+
+# ============================================================
+# 10. SAFE SEND FILE
 # ============================================================
 
 async def safe_send_file(
@@ -427,7 +632,7 @@ async def safe_send_file(
 
 
 # ============================================================
-# 10. SAFE SEND MESSAGE
+# 11. SAFE SEND MESSAGE
 # ============================================================
 
 async def safe_send_message(
@@ -481,19 +686,31 @@ async def safe_send_message(
 
 
 # ============================================================
-# 11. ALBUM HANDLER
+# 12. ALBUM HANDLER
+# ============================================================
+#
+# This handles posts like:
+#
+#   [IMAGE]
+#   [IMAGE]
+#   [IMAGE]
+#   [IMAGE]
+#   Caption:
+#   "Mars Cover Rangers All In One Palette 24g
+#    Available Shade: Shown On The Picture
+#    Wholesale Price: 810"
+#
+# The entire album is sent together with its caption.
+#
+# We also wait briefly when the album itself has no caption,
+# because in some groups Telegram may deliver the text as a
+# separate message immediately before/after the album.
 # ============================================================
 
 @client.on(events.Album(chats=WHOLESALE_GROUPS))
 async def album_handler(event):
 
     source_id = event.chat_id
-
-    original_text = (
-        event.text
-        or event.raw_text
-        or ""
-    )
 
     print(
         f"\n📸 Album from wholesale group "
@@ -511,11 +728,43 @@ async def album_handler(event):
         f"{', '.join(categories)}"
     )
 
+    if not categories:
+        return
+
+    # Get ALL media in the album.
     media_files = [
         msg.media
         for msg in event.messages
         if msg.media
     ]
+
+    if not media_files:
+        return
+
+    # Get the caption from the album itself.
+    original_text = album_caption(event)
+
+    # If a text-only message was already waiting from this
+    # same source group, it may be the album caption.
+    pending = PENDING.get(source_id)
+
+    if not original_text and pending:
+        if pending["kind"] == "text":
+            original_text = pending["text"]
+
+        cancel_pending(source_id)
+
+    # Give a caption-less album a short chance to receive
+    # a separate text message immediately afterward.
+    if not original_text:
+
+        await asyncio.sleep(ALBUM_CAPTION_WAIT)
+
+        pending = PENDING.get(source_id)
+
+        if pending and pending["kind"] == "text":
+            original_text = pending["text"]
+            cancel_pending(source_id)
 
     routes = get_routes_for_source(source_id)
 
@@ -535,70 +784,170 @@ async def album_handler(event):
 
 
 # ============================================================
-# 12. SINGLE MESSAGE HANDLER
+# 13. SINGLE MESSAGE HANDLER
+# ============================================================
+#
+# Handles:
+#
+# A) Normal text + image in the SAME Telegram message
+#    -> send immediately as one post.
+#
+# B) Text first, image shortly after
+#    -> wait and combine them.
+#
+# C) Image first, text shortly after
+#    -> wait and combine them.
+#
+# D) Text that has no matching media
+#    -> after PAIR_WINDOW, send normally.
+#
+# E) Media that has no matching text
+#    -> after PAIR_WINDOW, send normally.
+#
+# Album messages are ignored here because album_handler above
+# owns grouped messages.
 # ============================================================
 
 @client.on(events.NewMessage(chats=WHOLESALE_GROUPS))
 async def single_handler(event):
 
+    # Telegram albums generate multiple NewMessage events.
+    # The Album handler processes those as one unit.
     if event.grouped_id:
         return
-        # Album handler processes grouped messages.
 
     source_id = event.chat_id
-
     msg = event.message
 
-    original_text = (
-        msg.text
-        or msg.raw_text
-        or ""
-    )
+    original_text = message_text(msg)
+    media = msg.media
 
     print(
         f"\n📨 Message from wholesale group "
         f"{source_id}"
     )
 
-    categories = SOURCE_TO_CATEGORIES.get(
-        source_id,
-        []
-    )
+    if original_text:
+        print(
+            f"📝 Text: {original_text[:150]}"
+        )
 
-    print(
-        f"📂 Categories triggered: "
-        f"{', '.join(categories)}"
-    )
+    if media:
+        print("🖼️ Media detected")
 
     routes = get_routes_for_source(source_id)
 
-    for route in routes:
+    if not routes:
+        return
 
-        text_for_route = build_text_for_route(
-            original_text,
-            route["price_fn"]
+    # --------------------------------------------------------
+    # CASE 1:
+    # Text + media are already together.
+    # This is the ideal Telegram post.
+    # --------------------------------------------------------
+
+    if original_text and media:
+
+        cancel_pending(source_id)
+
+        print(
+            "✅ Text + media are already together. "
+            "Sending as one product post."
         )
 
-        if msg.media:
+        await send_product(
+            routes,
+            media,
+            original_text
+        )
 
-            await safe_send_file(
-                route["target"],
-                msg.media,
-                text_for_route,
-                route["name"]
+        return
+
+    # --------------------------------------------------------
+    # CASE 2:
+    # MEDIA ONLY
+    #
+    # A text message may have arrived immediately before it.
+    # --------------------------------------------------------
+
+    if media and not original_text:
+
+        pending = PENDING.get(source_id)
+
+        if pending and pending["kind"] == "text":
+
+            cancel_pending(source_id)
+
+            print(
+                "🔗 Matched media with the preceding text. "
+                "Sending together."
             )
 
-        else:
-
-            await safe_send_message(
-                route["target"],
-                text_for_route,
-                route["name"]
+            await send_product(
+                routes,
+                media,
+                pending["text"]
             )
+
+            return
+
+        print(
+            "⏳ Media-only message held for "
+            f"{PAIR_WINDOW} seconds for possible caption/text."
+        )
+
+        await hold_media(
+            source_id,
+            media
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # CASE 3:
+    # TEXT ONLY
+    #
+    # An image may arrive immediately after it.
+    # --------------------------------------------------------
+
+    if original_text and not media:
+
+        pending = PENDING.get(source_id)
+
+        if pending and pending["kind"] == "media":
+
+            cancel_pending(source_id)
+
+            print(
+                "🔗 Matched text with the preceding media. "
+                "Sending together."
+            )
+
+            await send_product(
+                routes,
+                pending["media"],
+                original_text
+            )
+
+            return
+
+        print(
+            "⏳ Text-only message held for "
+            f"{PAIR_WINDOW} seconds for possible media."
+        )
+
+        await hold_text(
+            source_id,
+            original_text
+        )
+
+        return
+
+    # Empty message with no media/text: nothing to forward.
 
 
 # ============================================================
-# 13. MAIN LOOP WITH AUTO-RECONNECT
+# 14. MAIN LOOP WITH AUTO-RECONNECT
 # ============================================================
 
 async def main():
@@ -679,7 +1028,7 @@ async def main():
 
 
 # ============================================================
-# 14. START
+# 15. START
 # ============================================================
 
 if __name__ == "__main__":
