@@ -3,15 +3,17 @@ import re
 import asyncio
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from telethon.errors import FloodWaitError
 
 
 # ============================================================
 # 1. HEALTH CHECK SERVER
 # ============================================================
-# Kept exactly for Render Web Service.
-# If you later switch to a Background Worker, this can be removed.
+# Kept from your original working bot.
+# Required because this is running as a Render Web Service.
 
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -52,45 +54,66 @@ PASSWORD = os.environ.get("TELEGRAM_PASSWORD", "")
 # ============================================================
 #
 # IMPORTANT:
-# These IDs are kept exactly as provided.
+# Keep the IDs below in Telethon format.
 #
-# Pricing:
-# Destination 1 = x2 regular / x1.67 offer
-# Destination 2 = x1.11
-# Destination 3 = x1.25
+# BAG:
+# 8 source groups -> 3 destinations
 #
-# 5469616109 is intentionally present in ALL categories
-# for testing, exactly as requested.
+# JEWELLERY:
+# 4 source groups -> 3 destinations
+#
+# COSMETICS:
+# 5 source groups -> 3 destinations
+#
+# MIXED ITEMS:
+# 5 source groups -> 3 destinations
+#
+# 5469616109 is intentionally present in ALL FOUR categories.
+#
+# Therefore:
+#
+# 5469616109
+#      |
+#      +--> BAGS       -> 3 groups
+#      |
+#      +--> JEWELLERY  -> 3 groups
+#      |
+#      +--> COSMETICS  -> 3 groups
+#      |
+#      +--> MIXED      -> 3 groups
+#
+# There is NO deduplication between categories.
 # ============================================================
+
 
 CATEGORY_ROUTES = {
 
     "BAGS": {
         "sources": [
-            1002090867645,
-            1003508958197,
-            1001852806730,
-            1001787684116,
-            1001951740591,
-            1001625624771,
-            1002155025748,
-            5469616109,
+            -1002090867645,
+            -1003508958197,
+            -1001852806730,
+            -1001787684116,
+            -1001951740591,
+            -1001625624771,
+            -1002155025748,
+            -5469616109,
         ],
 
         "destinations": [
             {
-                "name": "Bags - Destination 1 (x2 / x1.67)",
-                "target": 1003569937421,
+                "name": "BAGS - Destination 1 (x2 / x1.67)",
+                "target": -1003569937421,
                 "price_fn": "bot1",
             },
             {
-                "name": "Bags - Destination 2 (x1.11)",
-                "target": 1002307941036,
+                "name": "BAGS - Destination 2 (x1.11)",
+                "target": -1002307941036,
                 "price_fn": "bot2",
             },
             {
-                "name": "Bags - Destination 3 (x1.25)",
-                "target": 1002304065773,
+                "name": "BAGS - Destination 3 (x1.25)",
+                "target": -1002304065773,
                 "price_fn": "bot3",
             },
         ],
@@ -99,26 +122,26 @@ CATEGORY_ROUTES = {
 
     "JEWELLERY": {
         "sources": [
-            1001950071055,
-            1003607938528,
-            1002289435020,
-            5469616109,
+            -1001950071055,
+            -1003607938528,
+            -1002289435020,
+            -5469616109,
         ],
 
         "destinations": [
             {
-                "name": "Jewellery - Destination 1 (x2 / x1.67)",
-                "target": 1003569937421,
+                "name": "JEWELLERY - Destination 1 (x2 / x1.67)",
+                "target": -1003569937421,
                 "price_fn": "bot1",
             },
             {
-                "name": "Jewellery - Destination 2 (x1.11)",
-                "target": 5541245327,
+                "name": "JEWELLERY - Destination 2 (x1.11)",
+                "target": -5541245327,
                 "price_fn": "bot2",
             },
             {
-                "name": "Jewellery - Destination 3 (x1.25)",
-                "target": 5523004801,
+                "name": "JEWELLERY - Destination 3 (x1.25)",
+                "target": -5523004801,
                 "price_fn": "bot3",
             },
         ],
@@ -127,27 +150,27 @@ CATEGORY_ROUTES = {
 
     "COSMETICS": {
         "sources": [
-            1002105437124,
-            1003591198481,
-            1002624473160,
-            1002440998125,
-            5469616109,
+            -1002105437124,
+            -1003591198481,
+            -1002624473160,
+            -1002440998125,
+            -5469616109,
         ],
 
         "destinations": [
             {
-                "name": "Cosmetics - Destination 1 (x2 / x1.67)",
-                "target": 1003569937421,
+                "name": "COSMETICS - Destination 1 (x2 / x1.67)",
+                "target": -1003569937421,
                 "price_fn": "bot1",
             },
             {
-                "name": "Cosmetics - Destination 2 (x1.11)",
-                "target": 5456273276,
+                "name": "COSMETICS - Destination 2 (x1.11)",
+                "target": -5456273276,
                 "price_fn": "bot2",
             },
             {
-                "name": "Cosmetics - Destination 3 (x1.25)",
-                "target": 5598693604,
+                "name": "COSMETICS - Destination 3 (x1.25)",
+                "target": -5598693604,
                 "price_fn": "bot3",
             },
         ],
@@ -156,27 +179,27 @@ CATEGORY_ROUTES = {
 
     "MIXED ITEMS": {
         "sources": [
-            1002324384553,
-            1003550177477,
-            1002690885699,
-            1002568161985,
-            5469616109,
+            -1002324384553,
+            -1003550177477,
+            -1002690885699,
+            -1002568161985,
+            -5469616109,
         ],
 
         "destinations": [
             {
-                "name": "Mixed Items - Destination 1 (x2 / x1.67)",
-                "target": 1003569937421,
+                "name": "MIXED ITEMS - Destination 1 (x2 / x1.67)",
+                "target": -1003569937421,
                 "price_fn": "bot1",
             },
             {
-                "name": "Mixed Items - Destination 2 (x1.11)",
-                "target": 5471249349,
+                "name": "MIXED ITEMS - Destination 2 (x1.11)",
+                "target": -5471249349,
                 "price_fn": "bot2",
             },
             {
-                "name": "Mixed Items - Destination 3 (x1.25)",
-                "target": 5313617530,
+                "name": "MIXED ITEMS - Destination 3 (x1.25)",
+                "target": -5313617530,
                 "price_fn": "bot3",
             },
         ],
@@ -192,10 +215,7 @@ def bot1_price_text(wholesale):
     regular = wholesale * 2
     offer = int(wholesale * 1.67)
 
-    return (
-        f"\n\nregular price: {regular}"
-        f"\noffer price: {offer}"
-    )
+    return f"\n\nregular price: {regular}\noffer price: {offer}"
 
 
 def bot2_price_text(wholesale):
@@ -218,20 +238,12 @@ PRICE_FUNCTIONS = {
 
 
 # ============================================================
-# 5. BUILD SOURCE -> CATEGORY MAP
+# 5. CREATE SOURCE -> CATEGORY MAP
 # ============================================================
 #
 # A source can belong to multiple categories.
 #
-# Example:
-# 5469616109 belongs to:
-# BAGS
-# JEWELLERY
-# COSMETICS
-# MIXED ITEMS
-#
-# Therefore its message will be routed through all four
-# category configurations.
+# 5469616109 is intentionally mapped to all four.
 # ============================================================
 
 SOURCE_TO_CATEGORIES = {}
@@ -246,6 +258,7 @@ for category_name, category_data in CATEGORY_ROUTES.items():
         SOURCE_TO_CATEGORIES[source_id].append(category_name)
 
 
+# Unique source groups watched by Telethon.
 WHOLESALE_GROUPS = list(SOURCE_TO_CATEGORIES.keys())
 
 
@@ -301,8 +314,8 @@ def remove_wholesale_lines(text):
 
 def build_text_for_route(original_text, price_fn):
     """
-    Remove wholesale price line and append the
-    destination-specific price calculation.
+    Remove wholesale price line and append
+    the destination-specific price calculation.
     """
 
     if not original_text:
@@ -313,42 +326,24 @@ def build_text_for_route(original_text, price_fn):
     cleaned = remove_wholesale_lines(original_text)
 
     if match:
-
         wholesale = int(match.group(1))
-
         cleaned += price_fn(wholesale)
 
     return cleaned
 
 
 # ============================================================
-# 8. GET ROUTES FOR A SOURCE GROUP
+# 8. GET ALL ROUTES FOR A SOURCE GROUP
 # ============================================================
 
 def get_routes_for_source(source_id):
-    """
-    Return all destination routes belonging to this source.
 
-    A source may belong to multiple categories.
-
-    Duplicate destination IDs are removed so that the same
-    Telegram destination does not receive duplicate copies.
-
-    Example:
-    5469616109 belongs to all four categories.
-
-    Since Destination 1 is:
-    1003569937421
-
-    in all four categories, that destination receives
-    only ONE copy.
-    """
-
-    categories = SOURCE_TO_CATEGORIES.get(source_id, [])
+    categories = SOURCE_TO_CATEGORIES.get(
+        source_id,
+        []
+    )
 
     routes = []
-
-    seen_destinations = set()
 
     for category_name in categories:
 
@@ -356,24 +351,10 @@ def get_routes_for_source(source_id):
 
         for destination in category["destinations"]:
 
-            target = destination["target"]
-
-            if target in seen_destinations:
-
-                print(
-                    f"ℹ️ Duplicate destination {target} "
-                    f"detected for {source_id}; "
-                    f"skipping duplicate send."
-                )
-
-                continue
-
-            seen_destinations.add(target)
-
             routes.append({
                 "category": category_name,
                 "name": destination["name"],
-                "target": target,
+                "target": destination["target"],
                 "price_fn": PRICE_FUNCTIONS[
                     destination["price_fn"]
                 ],
@@ -383,7 +364,124 @@ def get_routes_for_source(source_id):
 
 
 # ============================================================
-# 9. ALBUM HANDLER
+# 9. SAFE SEND FILE
+# ============================================================
+#
+# Handles Telegram FloodWaitError.
+#
+# If Telegram says "wait 918 seconds", we wait and then
+# continue instead of abandoning the route.
+# ============================================================
+
+async def safe_send_file(
+    target,
+    file,
+    caption,
+    route_name
+):
+
+    while True:
+
+        try:
+
+            await client.send_file(
+                target,
+                file=file,
+                caption=caption,
+                parse_mode=None
+            )
+
+            print(
+                f"✅ Media sent to {route_name}"
+            )
+
+            return True
+
+        except FloodWaitError as e:
+
+            wait_seconds = e.seconds
+
+            print(
+                f"⏳ Telegram FloodWait for "
+                f"{route_name}: "
+                f"waiting {wait_seconds} seconds..."
+            )
+
+            await asyncio.sleep(
+                wait_seconds + 2
+            )
+
+            print(
+                f"🔄 FloodWait finished. "
+                f"Retrying {route_name}..."
+            )
+
+        except Exception as e:
+
+            print(
+                f"❌ Error forwarding media "
+                f"to {route_name}: {e}"
+            )
+
+            return False
+
+
+# ============================================================
+# 10. SAFE SEND MESSAGE
+# ============================================================
+
+async def safe_send_message(
+    target,
+    text,
+    route_name
+):
+
+    while True:
+
+        try:
+
+            await client.send_message(
+                target,
+                text
+            )
+
+            print(
+                f"✅ Text sent to {route_name}"
+            )
+
+            return True
+
+        except FloodWaitError as e:
+
+            wait_seconds = e.seconds
+
+            print(
+                f"⏳ Telegram FloodWait for "
+                f"{route_name}: "
+                f"waiting {wait_seconds} seconds..."
+            )
+
+            await asyncio.sleep(
+                wait_seconds + 2
+            )
+
+            print(
+                f"🔄 FloodWait finished. "
+                f"Retrying {route_name}..."
+            )
+
+        except Exception as e:
+
+            print(
+                f"❌ Error forwarding text "
+                f"to {route_name}: {e}"
+            )
+
+            return False
+
+
+# ============================================================
+# 11. ALBUM HANDLER
 # ============================================================
 
 @client.on(events.Album(chats=WHOLESALE_GROUPS))
@@ -398,8 +496,9 @@ async def album_handler(event):
     )
 
     print(
-        f"📸 Album from wholesale group "
-        f"{source_id}: {len(event.messages)} photos"
+        f"\n📸 Album from wholesale group "
+        f"{source_id}: "
+        f"{len(event.messages)} photos"
     )
 
     categories = SOURCE_TO_CATEGORIES.get(
@@ -408,7 +507,7 @@ async def album_handler(event):
     )
 
     print(
-        f"📂 Source belongs to categories: "
+        f"📂 Categories triggered: "
         f"{', '.join(categories)}"
     )
 
@@ -427,30 +526,16 @@ async def album_handler(event):
             route["price_fn"]
         )
 
-        try:
-
-            await client.send_file(
-                route["target"],
-                file=media_files,
-                caption=text_for_route,
-                parse_mode=None
-            )
-
-            print(
-                f"✅ Album sent to "
-                f"{route['name']}"
-            )
-
-        except Exception as e:
-
-            print(
-                f"❌ Error forwarding album to "
-                f"{route['name']}: {e}"
-            )
+        await safe_send_file(
+            route["target"],
+            media_files,
+            text_for_route,
+            route["name"]
+        )
 
 
 # ============================================================
-# 10. SINGLE MESSAGE HANDLER
+# 12. SINGLE MESSAGE HANDLER
 # ============================================================
 
 @client.on(events.NewMessage(chats=WHOLESALE_GROUPS))
@@ -458,7 +543,7 @@ async def single_handler(event):
 
     if event.grouped_id:
         return
-        # Album handler will process it.
+        # Album handler processes grouped messages.
 
     source_id = event.chat_id
 
@@ -471,7 +556,7 @@ async def single_handler(event):
     )
 
     print(
-        f"📨 Message from wholesale group "
+        f"\n📨 Message from wholesale group "
         f"{source_id}"
     )
 
@@ -481,7 +566,7 @@ async def single_handler(event):
     )
 
     print(
-        f"📂 Source belongs to categories: "
+        f"📂 Categories triggered: "
         f"{', '.join(categories)}"
     )
 
@@ -494,44 +579,26 @@ async def single_handler(event):
             route["price_fn"]
         )
 
-        try:
+        if msg.media:
 
-            if msg.media:
+            await safe_send_file(
+                route["target"],
+                msg.media,
+                text_for_route,
+                route["name"]
+            )
 
-                await client.send_file(
-                    route["target"],
-                    file=msg.media,
-                    caption=text_for_route,
-                    parse_mode=None
-                )
+        else:
 
-                print(
-                    f"✅ Media sent to "
-                    f"{route['name']}"
-                )
-
-            else:
-
-                await client.send_message(
-                    route["target"],
-                    text_for_route
-                )
-
-                print(
-                    f"✅ Text sent to "
-                    f"{route['name']}"
-                )
-
-        except Exception as e:
-
-            print(
-                f"❌ Error forwarding message to "
-                f"{route['name']}: {e}"
+            await safe_send_message(
+                route["target"],
+                text_for_route,
+                route["name"]
             )
 
 
 # ============================================================
-# 11. MAIN LOOP WITH AUTO-RECONNECT
+# 13. MAIN LOOP WITH AUTO-RECONNECT
 # ============================================================
 
 async def main():
@@ -561,7 +628,7 @@ async def main():
                 f"unique wholesale groups"
             )
 
-            print("\n📋 ROUTING CONFIGURATION:")
+            print("\n📋 ROUTING CONFIGURATION")
 
             for category_name, category in CATEGORY_ROUTES.items():
 
@@ -570,20 +637,30 @@ async def main():
                 )
 
                 print(
-                    f"   📥 Sources: "
-                    f"{len(category['sources'])}"
+                    "   📥 Source groups:"
+                )
+
+                for source in category["sources"]:
+                    print(
+                        f"      {source}"
+                    )
+
+                print(
+                    "   📤 Destinations:"
                 )
 
                 for destination in category["destinations"]:
 
                     print(
-                        f"   📤 "
+                        f"      "
                         f"{destination['name']} "
                         f"-> "
                         f"{destination['target']}"
                     )
 
-            print("\n🟢 Bot is running...\n")
+            print(
+                "\n🟢 Bot is running...\n"
+            )
 
             await client.run_until_disconnected()
 
@@ -602,7 +679,7 @@ async def main():
 
 
 # ============================================================
-# 12. START
+# 14. START
 # ============================================================
 
 if __name__ == "__main__":
